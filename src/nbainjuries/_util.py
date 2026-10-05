@@ -50,144 +50,116 @@ def _pagect_localpdf(filepath: str | PathLike):
         return pdf_numpgs
 
 
-def __concat_injreppgs(dflist_headpg: list, dflist_otherpgs: list) -> pd.DataFrame:
-    list_dfparts = [dflist_headpg[0]]
-    for appenddf_x in dflist_otherpgs:
-        if appenddf_x.loc[appenddf_x.index[0]].tolist() == list(dflist_headpg[0].columns):
-            appenddf_x.drop(index=appenddf_x.index[0], inplace=True)
-        appenddf_x.columns = dflist_headpg[0].columns
-        list_dfparts.append(appenddf_x)
-    for df_x in list_dfparts:
-        df_x['LastonPgBoundary'] = False
-    for df_x in list_dfparts[:-1]:
-        df_x.at[(df_x.shape[0] - 1), 'LastonPgBoundary'] = True
-    df_injrepconcat = pd.concat(list_dfparts, ignore_index=True)
-    return df_injrepconcat
+_FFILL_COLS = ['Game Date', 'Game Time', 'Matchup', 'Team']
+_IDX_PLAYER = _constants.expected_cols.index('Player Name')
+_IDX_STATUS = _constants.expected_cols.index('Current Status')
+_IDX_REASON = _constants.expected_cols.index('Reason')
+_NOT_YET_SUBMITTED = 'NOT YET SUBMITTED'
 
 
-def __clean_injrep(dfinjrep_x: pd.DataFrame) -> pd.DataFrame:
-    dfcleaning_x = dfinjrep_x.copy()
+def _build_injrep(tables: list, numpgs: int, rowgap: float) -> pd.DataFrame:
+    """
+    Rebuild the report's rows from where each printed line sits on the page. A row's wrapped Reason lines sit
+    around its Player Name line, closer together than the gap between rows, so consecutive lines no more than
+    rowgap apart belong to one row. A line that cannot be placed raises rather than joining a neighbour's row.
+    :param tables: tabula tables read with output_format='json', one per page, in page order
+    :param numpgs: number of pages in the pdf
+    :param rowgap: largest gap between the tops of consecutive lines of one row (_constants.rowgap_params*)
+    """
+    if len(tables) != numpgs:
+        raise DataValidationError(f"Expected one table per page ({numpgs} pages), got {len(tables)}.")
+    pages = [_pagelines(table, pgnum) for pgnum, table in enumerate(tables, start=1)]
+    if not pages[0]:
+        raise DataValidationError("No text found on page 1.")
+    _validate_headers(pd.DataFrame(columns=pages[0][0][1]))
 
-    ffill_cols = ['Game Date', 'Game Time', 'Matchup', 'Team']  # CONSTANT - modify as needed
-    for colname, seriesx in dfcleaning_x.items():
-        if (colname in ffill_cols):
-            seriesx.ffill(inplace=True)
+    records = []
+    for pgnum, lines in enumerate(pages, start=1):
+        rowlines = [line for line in lines if not _is_headerline(line[1])]
+        for grpnum, group in enumerate(_group_lines(rowlines, rowgap)):
+            if sum(1 for _, texts in group if texts[_IDX_PLAYER]) > 1:
+                raise DataValidationError(f"Two player names in one row: {_describe_group(group, pgnum)}")
+            record = _group_record(group)
+            if record[_IDX_PLAYER] is not None or _is_unsubmitted(record):
+                records.append(record)
+            elif grpnum == 0 and _is_reasononly(record) and records and records[-1][_IDX_PLAYER] is not None:
+                # A row split by a page break: its last lines head the next page
+                records[-1] = _append_reason(records[-1], record[_IDX_REASON])
+            else:
+                raise DataValidationError(f"Line belongs to no row: {_describe_group(group, pgnum)}")
 
-    dfcleaning_x['unsubmitted'] = dfcleaning_x['Reason'].apply(
-        lambda x: str(x).casefold()) == 'NOT YET SUBMITTED'.casefold()
-    df_unsubmitted = dfcleaning_x.loc[dfcleaning_x['unsubmitted'], :]
-    dfcleaning_x = dfcleaning_x.loc[~(dfcleaning_x['unsubmitted']), :]
+    df_injrep = pd.DataFrame(records, columns=_constants.expected_cols)
+    df_injrep[_FFILL_COLS] = df_injrep[_FFILL_COLS].ffill()
+    return df_injrep
 
-    dfcleaning_x['NextReas'] = dfcleaning_x['Reason'].shift(periods=-1, fill_value='N/A')
-    dfcleaning_x['NextPlname'] = dfcleaning_x['Player Name'].shift(periods=-1, fill_value='N/A')
-    dfcleaning_x['NextCstatus'] = dfcleaning_x['Current Status'].shift(periods=-1, fill_value='N/A')
-    dfcleaning_x['Nextx2Reas'] = dfcleaning_x['Reason'].shift(periods=-2, fill_value='N/A')
 
-    dfcleaning_x['PrevReas'] = dfcleaning_x['Reason'].shift(periods=1, fill_value='N/A')
-    dfcleaning_x['PrevPlname'] = dfcleaning_x['Player Name'].shift(periods=1, fill_value='N/A')
-    dfcleaning_x['PrevCstatus'] = dfcleaning_x['Current Status'].shift(periods=1, fill_value='N/A')
-    dfcleaning_x['Prevx2Reas'] = dfcleaning_x['Reason'].shift(periods=2, fill_value='N/A')
-    dfcleaning_x['PrevLastonPgBdry'] = dfcleaning_x['LastonPgBoundary'].shift(periods=1, fill_value='N/A')
+def _pagelines(table: dict, pgnum: int) -> list:
+    """
+    A page's printed lines as (top, cell texts), top to bottom; a line with no text is skipped.
+    """
+    lines = []
+    for row in table['data']:
+        if len(row) != len(_constants.expected_cols):
+            raise DataValidationError(
+                f"Page {pgnum}: a line has {len(row)} cells, expected {len(_constants.expected_cols)}.")
+        texts = [str(cell['text']).strip() for cell in row]
+        tops = [cell['top'] for cell, text in zip(row, texts) if text]
+        if tops:
+            lines.append((min(tops), texts))
+    return sorted(lines, key=lambda line: line[0])
 
-    # Create Flags
-    ## (a)
-    dfcleaning_x['GLeague'] = dfcleaning_x['Reason'].str.contains('G League', case=False).astype(pd.BooleanDtype())
-    ## (b)
-    dfcleaning_x['likely_reas1linecomplete'] = (
-            (dfcleaning_x['Reason'].str.contains('-', case=False)) &
-            (dfcleaning_x['Reason'].str.contains(';', case=False)) &
-            (dfcleaning_x['Player Name'].notna()) &
-            (dfcleaning_x['Current Status'].notna()) &
-            ~(dfcleaning_x['LastonPgBoundary'])
-    )
-    ## (c)
-    dfcleaning_x['likely_reas1linecomplete_alt'] = (
-            (dfcleaning_x['Reason'].notna()) &
-            (dfcleaning_x['Player Name'].notna()) &
-            (dfcleaning_x['Current Status'].notna()) &
-            (dfcleaning_x['Nextx2Reas'].isna()) &
-            (dfcleaning_x['Prevx2Reas'].isna()) &
-            ~(dfcleaning_x['LastonPgBoundary'])
-    )
-    ## (d)
-    list_uniquecases = ['League Suspension', 'Not with Team', 'Personal Reasons', 'Rest', 'Concussion Protocol']
-    uniquecase_regex = r'\b(?:' + '|'.join([case.replace(' ', '') for case in list_uniquecases]) + r')\b'
-    dfcleaning_x['likely_reas1linecomplete_alt2'] = (
-            (dfcleaning_x['Reason'].notna()) &
-            (dfcleaning_x['Player Name'].notna()) &
-            (dfcleaning_x['Current Status'].notna()) &
-            (dfcleaning_x['Reason'].str.replace(r'\s+', '', regex=True).str.contains(uniquecase_regex, case=False,
-                                                                                     na=False, regex=True)) &
-            ~(dfcleaning_x['LastonPgBoundary'])
-    )
-    ## (e)
-    dfcleaning_x['reas_multilinesplit'] = (
-            (dfcleaning_x['NextPlname'].isna()) &
-            (dfcleaning_x['NextCstatus'].isna()) &
-            (dfcleaning_x['PrevPlname'].isna()) &
-            (dfcleaning_x['PrevCstatus'].isna()) &
-            (~(dfcleaning_x['LastonPgBoundary'])) &
-            (~(dfcleaning_x['likely_reas1linecomplete'])) &
-            (~(dfcleaning_x['likely_reas1linecomplete_alt'])) &
-            (~(dfcleaning_x['likely_reas1linecomplete_alt2']))
-    )
-    # Overrides
-    ##
-    dfcleaning_x.loc[dfcleaning_x['GLeague'], 'reas_multilinesplit'] = False
 
-    # Handle multiline text in 'Reason' split onto preceding and succeeding line
-    ## (a)
-    dfcleaning_x.loc[((dfcleaning_x['reas_multilinesplit']) & (dfcleaning_x['Reason'].notna())), 'Reason'] = (
-            dfcleaning_x['PrevReas'] + ' ' + dfcleaning_x['Reason'] + ' ' + dfcleaning_x['NextReas'])
-    ## (b)
-    dfcleaning_x.fillna(value={'Reason': dfcleaning_x['Reason'].ffill() + ' ' + dfcleaning_x['Reason'].bfill()},
-                        inplace=True)
-    ## (c)
-    dfcleaning_x['next_multiline'] = dfcleaning_x['reas_multilinesplit'].shift(periods=-1, fill_value=False).astype(
-        bool)
-    dfcleaning_x['prev_multiline'] = dfcleaning_x['reas_multilinesplit'].shift(periods=1, fill_value=False).astype(bool)
-    dfcleaning_x['del_multiline'] = (
-            (dfcleaning_x['next_multiline']) |
-            (dfcleaning_x['prev_multiline'])
-    )
-    dfcleaning_x = dfcleaning_x.loc[~(dfcleaning_x['del_multiline']), :]
+def _group_lines(lines: list, rowgap: float) -> list:
+    """
+    Split a page's lines into rows wherever the gap between consecutive line tops exceeds rowgap.
+    """
+    groups = []
+    for line in lines:
+        if groups and line[0] - groups[-1][-1][0] <= rowgap:
+            groups[-1].append(line)
+        else:
+            groups.append([line])
+    return groups
 
-    # Page Break Split
-    ## (a)
-    dfcleaning_x['NextReas'] = dfcleaning_x['Reason'].shift(periods=-1, fill_value='N/A')
-    dfcleaning_x['NextPlname'] = dfcleaning_x['Player Name'].shift(periods=-1, fill_value='N/A')
-    dfcleaning_x['NextCstatus'] = dfcleaning_x['Current Status'].shift(periods=-1, fill_value='N/A')
-    dfcleaning_x['PrevReas'] = dfcleaning_x['Reason'].shift(periods=1, fill_value='N/A')
-    dfcleaning_x['PrevPlname'] = dfcleaning_x['Player Name'].shift(periods=1, fill_value='N/A')
-    dfcleaning_x['PrevCstatus'] = dfcleaning_x['Current Status'].shift(periods=1, fill_value='N/A')
 
-    ## (b)
-    dfcleaning_x['reas_pgbksplit'] = (
-            (dfcleaning_x['LastonPgBoundary']) &
-            (dfcleaning_x['Reason'].notna()) &
-            (dfcleaning_x['Player Name'].notna()) &
-            (dfcleaning_x['Current Status'].notna()) &
-            (dfcleaning_x['NextPlname'].isna()) &
-            (dfcleaning_x['NextCstatus'].isna()) &
-            (dfcleaning_x['NextReas'].notna())
-    )
-    dfcleaning_x.loc[dfcleaning_x['reas_pgbksplit'], 'Reason'] = (
-            dfcleaning_x['Reason'] + ' ' + dfcleaning_x['NextReas'])
+def _group_record(group: list) -> tuple:
+    """
+    One row's cells: each column's texts, top to bottom, joined by a space (None if the column is empty).
+    """
+    return tuple(' '.join(texts[idx] for _, texts in group if texts[idx]) or None
+                 for idx in range(len(_constants.expected_cols)))
 
-    ## (c)
-    dfcleaning_x['prev_pgbksplit'] = dfcleaning_x['reas_pgbksplit'].shift(periods=1, fill_value=False).astype(bool)
-    dfcleaning_x = dfcleaning_x.loc[~(dfcleaning_x['prev_pgbksplit']), :]
 
-    # Drop variables used for cleaning (keep first seven cols), add back unsubmitted cols, reindex
-    dfcleaning_xfinal = pd.concat([dfcleaning_x[dfcleaning_x.columns[:7]], df_unsubmitted[df_unsubmitted.columns[:7]]])
-    dfcleaning_xfinal.sort_index(inplace=True)
-    dfcleaning_xfinal.reset_index(inplace=True, drop=True)
-    return dfcleaning_xfinal
+def _is_unsubmitted(record: tuple) -> bool:
+    return (record[_IDX_PLAYER] is None and record[_IDX_STATUS] is None and
+            str(record[_IDX_REASON]).casefold() == _NOT_YET_SUBMITTED.casefold())
+
+
+def _is_reasononly(record: tuple) -> bool:
+    return record[_IDX_REASON] is not None and all(
+        cell is None for idx, cell in enumerate(record) if idx != _IDX_REASON)
+
+
+def _append_reason(record: tuple, text: str) -> tuple:
+    reason = text if record[_IDX_REASON] is None else record[_IDX_REASON] + ' ' + text
+    return record[:_IDX_REASON] + (reason,) + record[_IDX_REASON + 1:]
+
+
+def _describe_group(group: list, pgnum: int) -> str:
+    return f"page {pgnum}, " + '; '.join(f"top {top:.1f} {[text for text in texts if text]}" for top, texts in group)
+
+
+def _normalize_cols(cols) -> list:
+    return [re.sub(r'[\W_]+', '', str(colx).strip().lower()) for colx in cols]
+
+
+def _is_headerline(texts: list) -> bool:
+    return _normalize_cols(texts) == _normalize_cols(_constants.expected_cols)
 
 
 def _validate_headers(df_headpg: pd.DataFrame):
-    pg1cols_norm = [re.sub(r'[\W_]+', '', str(colx).strip().lower()) for colx in df_headpg.columns]
-    expcols_norm = [re.sub(r'[\W_]+', '', str(colx).strip().lower()) for colx in _constants.expected_cols]
+    pg1cols_norm = _normalize_cols(df_headpg.columns)
+    expcols_norm = _normalize_cols(_constants.expected_cols)
     if pg1cols_norm == expcols_norm:
         return True
     else:

@@ -22,37 +22,45 @@ async def get_reportdata(timestamp: datetime, session: ClientSession = None, loc
     if timestamp < datetime(year=2023, month=5, day=2, hour=17, minute=30):  # 21-22 and part of 22-23 season
         area_bounds = _constants.area_params2223_a
         col_bounds = _constants.cols_params2223_a
+        row_gap = _constants.rowgap_params2223_a
     elif datetime(year=2023, month=5, day=2, hour=17, minute=30) <= timestamp <= _constants.dictkeydts['2223'][
         'ploffend']:  # remainder of 22-23 season
         area_bounds = _constants.area_params2223_b
         col_bounds = _constants.cols_params2223_b
+        row_gap = _constants.rowgap_params2223_b
     elif _constants.dictkeydts['2324']['regseastart'] <= timestamp <= _constants.dictkeydts['2324'][
         'ploffend']:  # 23-24 season
         area_bounds = _constants.area_params2324
         col_bounds = _constants.cols_params2324
+        row_gap = _constants.rowgap_params2324
     elif _constants.dictkeydts['2425']['regseastart'] <= timestamp <= _constants.dictkeydts['2425'][
         'ploffend']:  # 24-25 season
         area_bounds = _constants.area_params2425
         col_bounds = _constants.cols_params2425
+        row_gap = _constants.rowgap_params2425
     elif _constants.dictkeydts['2526']['regseastart'] <= timestamp:
         area_bounds = _constants.area_params2526
         col_bounds = _constants.cols_params2526
+        row_gap = _constants.rowgap_params2526
     else:  # out of range - default to 25-26 params
         area_bounds = _constants.area_params2526
         col_bounds = _constants.cols_params2526
+        row_gap = _constants.rowgap_params2526
 
     if local:
         df_result = await _parser_asy.extract_irlocal_async(_gen_filepath(timestamp, localdir), area_headpg=area_bounds,
-                                                            cols_headpg=col_bounds)
+                                                            cols_headpg=col_bounds, rowgap=row_gap)
         return df_result if return_df else df_result.to_json(orient='records', index=False, indent=2, force_ascii=False)
     else:
         if session is None:
             async with ClientSession() as tempsession:
                 df_result = await _parser_asy.extract_irurl_async(gen_url(timestamp), session=tempsession, area_headpg=area_bounds,
-                                                                  cols_headpg=col_bounds, headers=headerparam)
+                                                                  cols_headpg=col_bounds, rowgap=row_gap,
+                                                                  headers=headerparam)
         else:
             df_result = await _parser_asy.extract_irurl_async(gen_url(timestamp), session=session, area_headpg=area_bounds,
-                                                              cols_headpg=col_bounds, headers=headerparam)
+                                                              cols_headpg=col_bounds, rowgap=row_gap,
+                                                              headers=headerparam)
         return df_result if return_df else df_result.to_json(orient='records', index=False, indent=2, force_ascii=False)
 
 
