@@ -3,8 +3,8 @@ import pandas as pd
 import PyPDF2
 from io import BytesIO
 from ._exceptions import URLRetrievalError, LocalRetrievalError
-from ._util import __concat_injreppgs, _validate_headers, _pagect_localpdf, __clean_injrep
-from ._constants import requestheaders
+from ._util import _build_injrep, _validate_headers, _pagect_localpdf
+from ._constants import requestheaders, rowgap_params2526
 import asyncio
 import aiohttp
 from aiohttp import ClientSession
@@ -54,7 +54,7 @@ def _read_pdfjvmwrap(*args, **kwargs):
 
 async def extract_irurl_async(filepath: str | PathLike, session: ClientSession, area_headpg: list, cols_headpg: list,
                       area_otherpgs: list | None = None, cols_otherpgs: list | None = None,
-                      **kwargs) -> pd.DataFrame:
+                      rowgap: float = rowgap_params2526, **kwargs) -> pd.DataFrame:
     """
     :param filepath: url of report
     :param session:
@@ -62,6 +62,7 @@ async def extract_irurl_async(filepath: str | PathLike, session: ClientSession, 
     :param cols_headpg: column boundaries of first pg of pdf
     :param area_otherpgs: area boundaries of other pgs of pdf if needed
     :param cols_otherpgs: column boundaries of other pgs of pdf if needed
+    :param rowgap: largest gap between the tops of consecutive lines of one row
     :param kwargs: custom headers
     :return:
     """
@@ -74,26 +75,24 @@ async def extract_irurl_async(filepath: str | PathLike, session: ClientSession, 
     if cols_otherpgs is None:
         cols_otherpgs = cols_headpg
 
-    # First pg
-    dfs_headpg = await asyncio.to_thread(_read_pdfjvmwrap, filepath, stream=True, user_agent=requestheaders['User-Agent'],
-                                         area=area_headpg, columns=cols_headpg, pages=1)
-    _validate_headers(dfs_headpg[0])
+    # First pg - json output keeps where each line sits on the page
+    tables_headpg = await asyncio.to_thread(_read_pdfjvmwrap, filepath, stream=True,
+                                            user_agent=requestheaders['User-Agent'], area=area_headpg,
+                                            columns=cols_headpg, pages=1, output_format='json')
     # Following pgs
-    dfs_otherpgs = []  # default to empty if single pg
+    tables_otherpgs = []  # default to empty if single pg
     if pdf_numpgs >= 2:
-        dfs_otherpgs = await asyncio.to_thread(_read_pdfjvmwrap, filepath, stream=True, user_agent=requestheaders['User-Agent'],
-                                               area=area_otherpgs, columns=cols_otherpgs, pages='2-' + str(pdf_numpgs),
-                                               pandas_options={'header': None})
-        # default to pandas_options={'header': 'infer'}
-        # Override with pandas_options={'header': None}; manually drop included headers if necessary
+        tables_otherpgs = await asyncio.to_thread(_read_pdfjvmwrap, filepath, stream=True,
+                                                  user_agent=requestheaders['User-Agent'], area=area_otherpgs,
+                                                  columns=cols_otherpgs, pages='2-' + str(pdf_numpgs),
+                                                  output_format='json')
     # Processing
-    df_rawdata = __concat_injreppgs(dflist_headpg=dfs_headpg, dflist_otherpgs=dfs_otherpgs)
-    df_cleandata = __clean_injrep(df_rawdata)
-    return df_cleandata
+    return _build_injrep(tables_headpg + tables_otherpgs, pdf_numpgs, rowgap)
 
 
 async def extract_irlocal_async(filepath: str | PathLike, area_headpg: list, cols_headpg: list,
-                        area_otherpgs: list | None = None, cols_otherpgs: list | None = None) -> pd.DataFrame:
+                        area_otherpgs: list | None = None, cols_otherpgs: list | None = None,
+                        rowgap: float = rowgap_params2526) -> pd.DataFrame:
     try:
         pdf_numpgs = await asyncio.to_thread(_pagect_localpdf, filepath)
     except (FileNotFoundError, PermissionError) as e_gen:
@@ -106,19 +105,15 @@ async def extract_irlocal_async(filepath: str | PathLike, area_headpg: list, col
     if cols_otherpgs is None:
         cols_otherpgs = cols_headpg
 
-    # First page
-    dfs_headpg = await asyncio.to_thread(_read_pdfjvmwrap, filepath, stream=True, area=area_headpg,
-                                 columns=cols_headpg, pages=1)
-    _validate_headers(dfs_headpg[0])
+    # First page - json output keeps where each line sits on the page
+    tables_headpg = await asyncio.to_thread(_read_pdfjvmwrap, filepath, stream=True, area=area_headpg,
+                                            columns=cols_headpg, pages=1, output_format='json')
     # Following pgs
-    dfs_otherpgs = []  # default to empty if single pg
+    tables_otherpgs = []  # default to empty if single pg
     if pdf_numpgs >= 2:
-        dfs_otherpgs = await asyncio.to_thread(_read_pdfjvmwrap, filepath, stream=True, area=area_otherpgs,
-                                       columns=cols_otherpgs, pages='2-' + str(pdf_numpgs), pandas_options={'header': None})
-        # default setting - pandas_options={'header': 'infer'} has been overridden with pandas_options={'header': None}
-        # Check first row contents; no headers present --> good, headers present --> drop and set headers manually
+        tables_otherpgs = await asyncio.to_thread(_read_pdfjvmwrap, filepath, stream=True, area=area_otherpgs,
+                                                  columns=cols_otherpgs, pages='2-' + str(pdf_numpgs),
+                                                  output_format='json')
     # Processing
-    df_rawdata = __concat_injreppgs(dflist_headpg=dfs_headpg, dflist_otherpgs=dfs_otherpgs)
-    df_cleandata = __clean_injrep(df_rawdata)
-    return df_cleandata
+    return _build_injrep(tables_headpg + tables_otherpgs, pdf_numpgs, rowgap)
 

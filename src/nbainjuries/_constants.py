@@ -26,6 +26,15 @@ cols_params2425 = cols_params2324
 area_params2526 = area_params2425
 cols_params2526 = cols_params2425
 
+# row gap params - the largest gap between the tops of consecutive printed lines of one row
+# A row's wrapped Reason lines sit around its Player Name line, closer together than the gap between rows
+# Measured over 305 reports: 2223_a lines of a row 4 apart, rows 18-19 apart; later layouts 7 or 14 apart, rows 22-23
+rowgap_params2223_a = 11.0
+rowgap_params2223_b = 18.0
+rowgap_params2324 = 18.0
+rowgap_params2425 = rowgap_params2324
+rowgap_params2526 = rowgap_params2425
+
 dictkeydts = {'2122': {'regseastart': datetime(2021, 10, 18, 0, 30),
   'regseaend': datetime(2022, 4, 10, 23, 30),
   'ploffstart': datetime(2022, 4, 15, 0, 30),
