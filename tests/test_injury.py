@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import random
 import pandas as pd
 from nbainjuries import injury, _parser, _constants
-from nbainjuries._util import _gen_url, _gen_filepath, _DT_LEGACYFMT1, _DT_LEGACYFMT2
+from nbainjuries._util import _gen_url, _gen_filepath
 from nbainjuries._exceptions import DataValidationError, URLRetrievalError, LocalRetrievalError
 
 
@@ -191,27 +191,25 @@ class genurl_test(unittest.TestCase):
         url = _gen_url(ts)
         self.assertIn('Injury-Report_2026-01-06_05_00PM.pdf', url)
 
-    def test_transition_date_legacyfmt1(self):
-        """Test the format boundary at _DT_LEGACYFMT1."""
-        ts = _DT_LEGACYFMT1
+    def test_transition_date_printed_half_past(self):
+        """The last report of 2025-12-19 printed at half past its hour."""
+        ts = datetime(2025, 12, 19, 15, 30)
         url = _gen_url(ts)
         self.assertIn('_03PM.pdf', url)
         self.assertNotIn('_03_00PM.pdf', url)
 
-    def test_transition_date_legacyfmt2(self):
-        """Test the format boundary at _DT_LEGACYFMT2."""
-        ts = _DT_LEGACYFMT2
+    def test_transition_date_printed_quarter_to(self):
+        """The first report of 2025-12-19 printed at quarter to the next hour."""
+        ts = datetime(2025, 12, 19, 16, 45)
         url = _gen_url(ts)
         self.assertIn('_04PM.pdf', url)
         self.assertNotIn('_04_00PM.pdf', url)
 
-    def test_legacy_gap_err(self):
-        gap_time = _DT_LEGACYFMT1 + timedelta(minutes=10)
-        with self.assertRaises(ValueError):
-            _gen_url(gap_time)
-        gap_time2 = _DT_LEGACYFMT2 - timedelta(minutes=10)
-        with self.assertRaises(ValueError):
-            _gen_url(gap_time2)
+    def test_transition_date_hour_label(self):
+        """Every time before _DT_NEWFMT15M names its hour's report, including 2025-12-19 4 PM itself."""
+        ts = datetime(2025, 12, 19, 16, 0)
+        self.assertIn('Injury-Report_2025-12-19_04PM.pdf', _gen_url(ts))
+        self.assertTrue(_gen_filepath(ts, 'dir').endswith('Injury-Report_2025-12-19_04PM.pdf'))
 
     def test_old_format_random_hm1(self):
         hour = random.randint(0, 23)
